@@ -780,15 +780,6 @@ with st.sidebar:
     st.caption("Restaurant Finder — Upstate NY")
     st.divider()
 
-    st.subheader("API Keys")
-    openai_key = st.text_input("OpenAI API Key", type="password",
-                                key="openai_key",
-                                placeholder="sk-...")
-    google_key = st.text_input("Google Places API Key (optional)", type="password",
-                                key="google_key",
-                                placeholder="AIza...")
-    st.divider()
-
     st.subheader("Pipeline Status")
     st.write("Discovery Agent (Lauren):", "✅" if True else "❌")
     st.write("Scraper (Ryan):", "✅" if SCRAPER_AVAILABLE else "⚠️ requests/bs4 missing")
