@@ -28,30 +28,33 @@ logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger("restaurant_app")
 
 # Optional heavy imports (graceful degradation if packages missing)
+# NOTE: we catch Exception (not just ImportError) because transitive
+# dependencies like protobuf/grpc can throw TypeError at import time
+# on certain Python versions used by Streamlit Cloud.
 try:
     import requests
     from bs4 import BeautifulSoup
     import trafilatura
     SCRAPER_AVAILABLE = True
-except ImportError:
+except Exception:
     SCRAPER_AVAILABLE = False
 
 try:
     import pdfplumber
     PDF_AVAILABLE = True
-except ImportError:
+except Exception:
     PDF_AVAILABLE = False
 
 try:
     import chromadb
     CHROMA_AVAILABLE = True
-except ImportError:
+except Exception:
     CHROMA_AVAILABLE = False
 
 try:
     from openai import OpenAI
     OPENAI_AVAILABLE = True
-except ImportError:
+except Exception:
     OPENAI_AVAILABLE = False
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1  SHARED MOCK DATA  (same across Lauren's + Toby's notebooks)
