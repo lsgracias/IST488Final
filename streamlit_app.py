@@ -358,14 +358,34 @@ CUISINE_MAP = {
     }
 
 ENRICHMENT_SYSTEM_PROMPT = """You are a restaurant data enrichment assistant.
-Given a restaurant's basic metadata and scraped website text, extract:
-- cuisine_type (e.g. "Italian", "BBQ", "Mexican-American")
-- menu_items: 3-8 items as [{"name": str, "description": str}]
-- price_range: one of "25", "50", "100", "1000"
-- menu_available_online: true/false
+Your task is to extract structured information from restaurant metadata and scraped website text.
 
-If content is empty or scrape failed, infer from the restaurant name and type.
-Respond ONLY with valid JSON. No markdown, no prose."""
+Rules:
+- Be accurate and conservative - do not hallucinate.
+- If information is unclear, make a reasonable inference based on name, type, or common cuisine patterns.
+- Keep outputs simple and realistic. 
+
+Extract:
+- cuisine_type: short label (e.g., "Italian", "BBQ", "Mexican-American", "Caribbean", "Indian")
+- menu_items: 3-6 realistic items as [{"name": str, "description": str}]
+- Descriptions should be short (5-12 words)
+- menu_available_online: true/false 
+
+If scraping failed:
+- Infer cuisine from name or restaurant type 
+- Use generic but plausible menu items 
+
+Respond ONLY with valid JSON. No markdown. No explanations."""
+
+
+# Given a restaurant's basic metadata and scraped website text, extract:
+# - cuisine_type (e.g. "Italian", "BBQ", "Mexican-American")
+# - menu_items: 3-8 items as [{"name": str, "description": str}]
+# - price_range: one of "25", "50", "100", "1000"
+# - menu_available_online: true/false
+
+#--If content is empty or scrape failed, infer from the restaurant name and type.
+#--Respond ONLY with valid JSON. No markdown, no prose."""
 
 QUERY_SYSTEM_PROMPT = """You help users find restaurants in upstate NY (Syracuse, Rochester, Albany).
 Answer based ONLY on the provided restaurant records. If no good matches, say so honestly.
