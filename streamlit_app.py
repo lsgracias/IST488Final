@@ -361,7 +361,7 @@ ENRICHMENT_SYSTEM_PROMPT = """You are a restaurant data enrichment assistant.
 Given a restaurant's basic metadata and scraped website text, extract:
 - cuisine_type (e.g. "Italian", "BBQ", "Mexican-American")
 - menu_items: 3-8 items as [{"name": str, "description": str}]
-- price_range: one of "$", "$$", "$$$", "$$$$"
+- price_range: one of "25", "50", "100", "1000"
 - menu_available_online: true/false
 
 If content is empty or scrape failed, infer from the restaurant name and type.
