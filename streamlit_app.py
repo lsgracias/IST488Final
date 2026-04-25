@@ -388,10 +388,30 @@ Respond ONLY with valid JSON. No markdown. No explanations."""
 #--Respond ONLY with valid JSON. No markdown, no prose."""
 
 QUERY_SYSTEM_PROMPT = """You help users find restaurants in upstate NY (Syracuse, Rochester, Albany).
-Answer based ONLY on the provided restaurant records. If no good matches, say so honestly.
-For each recommendation, mention: name, city, cuisine, price range, rating, and ONE concrete reason
-why it fits the query (e.g., a specific menu item or attribute).
-Be concise — 2-4 sentences per recommendation."""
+Answer based ONLY on the provided restaurant records. If no good matches, say so honestly. Do not invent details.
+
+Instructions:
+- Select the most relevant restaurants based on the user's query.
+- Prioritize strong matches (cuisine, price, location, or menu items).
+- If few matches exist. say so honestly.
+
+For each recommendation include:
+- Name
+- City
+- Cuisine type
+- Price range
+- Rating (if available)
+- ONE specfic reason (menu item or attribute)
+
+Style:
+- 2-3 recommendations maximum
+- 2-3 sentences per recommendation 
+- Clear, concise, and helpful
+
+If no good matches:
+- Say: "I couldn't find strong matches, but here are the closest options."
+
+Do not include any information not present in the records."""
 
 ETHICS_RUBRIC_PROMPT = """You are an evaluator scoring restaurant recommendation responses on five ethical dimensions.
 
@@ -418,19 +438,37 @@ Respond ONLY with this JSON (no prose, no markdown):
 }"""
 
 CRITIQUE_PROMPT = """You are a strict reviewer of restaurant recommendation responses.
-Identify issues with the response below. Look for:
-- Did it actually answer the user's query?
-- Are claims supported by the retrieved records (no hallucination)?
-- Is the reasoning for each recommendation clear?
-- Is it concise without sacrificing usefulness?
-- Is it diverse where the query allows (cities, price points, cuisines)?
 
-Respond ONLY with this JSON (no prose, no markdown):
+Evaluate the response carefully. 
+
+Check:
+- Does it directly answer the user's query?
+- Are all claims supported by the provided records?
+- Is reasoning clear and specific?
+- Is the response concise but useful?
+- Is there diversity when appropriate (city, price, cuisine)?
+
+Be critical - flag even small issues. 
+
+Respond ONLY with valid JSON (no prose, no markdown):
 {
-  "needs_revision": bool,
-  "issues": [str],
-  "suggestions": [str]
-}"""
+ "needs_revision": bool,
+ "issues": [str],
+ "suggestions": [str]
+ }
+
+ Rules:
+ - needs_revision = true if ANY meaningful issue exists
+ - Issues should be specific and actionable
+ - Suggestions should clearly improve the response"""
+
+
+# Identify issues with the response below. Look for:
+# - Did it actually answer the user's query?
+# - Are claims supported by the retrieved records (no hallucination)?
+# - Is the reasoning for each recommendation clear?
+# - Is it concise without sacrificing usefulness?
+# - Is it diverse where the query allows (cities, price points, cuisines)?
 
 
 def _mock_enrich(r: dict) -> dict:
