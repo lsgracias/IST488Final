@@ -810,11 +810,15 @@ def run_tests(fixtures_path: Optional[str] = None) -> list:
 # 7  STREAMLIT UI — Single-page seamless flow
 # ═══════════════════════════════════════════════════════════════════════════════
 
+APP_VERSION = "1.0"
+APP_VERSION_LABEL = "Discovery"
+
 # ── Session state defaults ────────────────────────────────────────────────────
 for _key, _default in [
     ("restaurants", []), ("enriched_records", []),
     ("conversation_history", []), ("chat_messages", []),
     ("last_query_trace", {}), ("pipeline_ran", False),
+    ("data_source", "mock"),
 ]:
     if _key not in st.session_state:
         st.session_state[_key] = _default
@@ -863,16 +867,39 @@ def _auto_enrich(restaurants):
 
 # ── Auto-initialize pipeline on first load ────────────────────────────────────
 if not st.session_state.enriched_records:
-    restaurants = run_discovery(google_api_key=_get_google_key())
+    _init_key = _get_google_key()
+    restaurants = run_discovery(google_api_key=_init_key)
     st.session_state.restaurants = restaurants
     st.session_state.enriched_records = _auto_enrich(restaurants)
     st.session_state.pipeline_ran = True
+    st.session_state.data_source = "live" if _init_key else "mock"
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.title("🍽️ Restaurant Finder")
     st.caption("IST 488/688 Final Project — Upstate NY")
+
+    # ── Version badge ─────────────────────────────────────────────────────────
+    st.markdown(
+        f'<div style="background:linear-gradient(135deg,#6366f1,#818cf8);'
+        f'padding:8px 14px;border-radius:8px;margin:8px 0 4px 0;'
+        f'font-weight:700;font-size:0.95em;color:#fff;">'
+        f'v{APP_VERSION} — {APP_VERSION_LABEL}</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Feature checklist ─────────────────────────────────────────────────────
+    with st.expander("📋 Features Implemented", expanded=False):
+        st.markdown("""
+        - ✅ Discovery Agent (mock + live)
+        - ⬜ Web Scraping
+        - ⬜ AI Enrichment (GPT-4o)
+        - ⬜ ChromaDB Semantic Search
+        - ⬜ Smart Chat w/ Memory
+        - ⬜ Ethics + Self-Reflection
+        """)
+
     st.divider()
 
     # Show key inputs only if secrets aren't already configured
@@ -899,6 +926,8 @@ with st.sidebar:
         st.write("OpenAI:", "✅" if OPENAI_AVAILABLE else "⚠️ missing")
         st.write("ChromaDB:", "✅" if CHROMA_AVAILABLE else "⚠️ missing")
         st.caption(f"Records: {len(st.session_state.enriched_records)}")
+        _src = st.session_state.data_source
+        st.caption(f"Data source: {'🌐 Google Places API' if _src == 'live' else '📦 Mock data'}")
 
     with st.expander("🧪 Run Tests"):
         if st.button("Run All Tests"):
@@ -991,6 +1020,7 @@ if st.button("🔍 Find Restaurants", type="primary", use_container_width=True):
         st.session_state.restaurants = restaurants
         st.session_state.enriched_records = _auto_enrich(restaurants)
         st.session_state.pipeline_ran = True
+        st.session_state.data_source = "live" if google_api_key else "mock"
         st.session_state.chat_messages = []
         st.session_state.conversation_history = []
     st.rerun()
@@ -1011,6 +1041,13 @@ if st.session_state.pipeline_ran and st.session_state.enriched_records:
     filtered = sorted(filtered, key=lambda x: -(x.get("rating") or 0))
 
     st.divider()
+
+    # Data source indicator
+    _ds = st.session_state.data_source
+    if _ds == "live":
+        st.success("🌐 Results from **Google Places API** (live data)")
+    else:
+        st.info("📦 Results from **mock data** — add a Google Places API key for live results")
 
     # Summary metrics
     if filtered:
