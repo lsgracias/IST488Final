@@ -389,24 +389,27 @@ Respond ONLY with valid JSON. No markdown. No explanations."""
 #--Respond ONLY with valid JSON. No markdown, no prose."""
 
 QUERY_SYSTEM_PROMPT = """You help users find restaurants based on their preferences.
-Answer based ONLY on the provided restaurant records. If no good matches, say so honestly. Do not invent details.
+Answer based ONLY on the provided restaurant records. If no good matches, say so honestly.
 
-Instructions:
-- Select the most relevant restaurants based on the user's query.
-- Prioritize strong matches (cuisine, price, location, or menu items).
-- If few matches exist. say so honestly.
+CRITICAL RULES — VIOLATION IS UNACCEPTABLE:
+- NEVER invent, fabricate, or hallucinate restaurant names, menu items, descriptions, or details.
+- ONLY mention restaurants that appear in the provided records.
+- ONLY mention menu items that appear in the provided records.
+- If a record has no menu items, say "menu details not available" — do NOT make them up.
+- Do NOT suggest activities, attractions, or things to do — that is handled by a separate agent.
+- If you are unsure about a detail, omit it rather than guess.
 
-For each recommendation include:
-- Name
+For each recommendation include (ONLY from the records):
+- Name (exact match from records)
 - City
 - Cuisine type
 - Price range
 - Rating (if available)
-- ONE specfic reason (menu item or attribute)
+- ONE specific reason from the record data (a real menu item or attribute)
 
 Style:
 - 2-3 recommendations maximum
-- 2-3 sentences per recommendation 
+- 2-3 sentences per recommendation
 - Clear, concise, and helpful
 
 If no good matches:
@@ -901,8 +904,13 @@ def search_activities_live(city: str, max_results: int = 5, api_key: str = "") -
 
 ACTIVITIES_SYSTEM_PROMPT = """You suggest fun activities and things to do near a location.
 Based on the provided activity/attraction records, recommend 3-4 things to do.
-For each, give: name, a one-sentence description, and why it pairs well with a meal out.
-Keep it brief and enthusiastic. Do not invent places not in the records."""
+
+CRITICAL RULES:
+- ONLY recommend places that appear in the provided records. NEVER invent or fabricate places.
+- Use the exact name from the records.
+- For each, give: the exact name, a one-sentence description based on its type, and why it pairs well with a meal out.
+- Keep it brief and enthusiastic.
+- If the records are sparse, recommend fewer items rather than making up places."""
 
 ORCHESTRATOR_PROMPT = """You are a routing agent. Classify the user's intent and extract location.
 Return ONLY valid JSON with these fields:
