@@ -809,14 +809,11 @@ def run_tests(fixtures_path: Optional[str] = None) -> list:
 
 
 
+
 # ═══════════════════════════════════════════════════════════════════════════════
-# 7  STREAMLIT UI — Chat-first restaurant discovery
+# 7a  LOCATION HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-APP_VERSION = "2.0"
-APP_VERSION_LABEL = "Chat-First"
-
-# ── Location extraction prompt ────────────────────────────────────────────────
 LOCATION_EXTRACT_PROMPT = """Extract the city/location from the user's message for a restaurant search.
 Rules:
 - Return the location in "City, State" format for US (e.g., "Syracuse, NY")
@@ -859,13 +856,214 @@ def discover_for_location(location: str, google_api_key: str = "") -> tuple:
     return (mock, "mock") if mock else (SAMPLE_RESTAURANTS[:7], "mock")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# 7b  MULTI-AGENT ORCHESTRATOR
+# ═══════════════════════════════════════════════════════════════════════════════
+
+ACTIVITY_FIELD_MASK = ",".join([
+    "places.id", "places.displayName", "places.formattedAddress",
+    "places.rating", "places.userRatingCount", "places.types",
+    "places.websiteUri",
+])
+
+ACTIVITY_TYPES = [
+    "tourist_attraction", "museum", "park", "movie_theater",
+    "bowling_alley", "amusement_park", "art_gallery", "night_club",
+    "shopping_mall", "spa", "stadium", "zoo", "aquarium",
+]
+
+
+def search_activities_live(city: str, max_results: int = 5, api_key: str = "") -> list:
+    """Search Google Places API for activities/attractions in a city."""
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": ACTIVITY_FIELD_MASK,
+    }
+    payload = {
+        "textQuery": f"things to do in {city}",
+        "maxResultCount": max_results,
+    }
+    r = requests.post(PLACES_TEXT_SEARCH_URL, headers=headers, json=payload, timeout=15)
+    r.raise_for_status()
+    places = r.json().get("places", [])
+    results = []
+    for p in places:
+        results.append({
+            "name": (p.get("displayName") or {}).get("text", ""),
+            "address": p.get("formattedAddress", ""),
+            "rating": p.get("rating"),
+            "types": p.get("types", []),
+            "website_url": p.get("websiteUri"),
+        })
+    return results
+
+
+ACTIVITIES_SYSTEM_PROMPT = """You suggest fun activities and things to do near a location.
+Based on the provided activity/attraction records, recommend 3-4 things to do.
+For each, give: name, a one-sentence description, and why it pairs well with a meal out.
+Keep it brief and enthusiastic. Do not invent places not in the records."""
+
+ORCHESTRATOR_PROMPT = """You are a routing agent. Classify the user's intent and extract location.
+Return ONLY valid JSON with these fields:
+{
+  "agents": ["food_finder"] or ["alt_activities"] or ["food_finder", "alt_activities"],
+  "location": "City, State" or "NONE" if no new location mentioned
+}
+
+Rules:
+- If user asks about food/restaurants/eating → include "food_finder"
+- If user asks about activities/things to do/entertainment → include "alt_activities"
+- If user asks about both or says something like "plan an evening" → include both
+- If it's a follow-up question with no new location → set location to "NONE"
+- Default to ["food_finder"] if unclear
+Return ONLY JSON."""
+
+
+def orchestrator_classify(query: str, client) -> dict:
+    """Use gpt-4o-mini to classify intent and extract location."""
+    if not client:
+        return {"agents": ["food_finder"], "location": None}
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": ORCHESTRATOR_PROMPT},
+                {"role": "user", "content": query},
+            ],
+            response_format={"type": "json_object"},
+            max_tokens=60,
+        )
+        result = json.loads(resp.choices[0].message.content)
+        loc = result.get("location", "NONE")
+        if loc == "NONE" or not loc:
+            result["location"] = None
+        return result
+    except Exception:
+        return {"agents": ["food_finder"], "location": None}
+
+
+def alt_activities_agent(location: str, client, google_api_key: str = "") -> str:
+    """Find activities/attractions for a location and generate a summary."""
+    # Check cache
+    if "activities_cache" not in st.session_state:
+        st.session_state.activities_cache = {}
+    if location in st.session_state.activities_cache:
+        return st.session_state.activities_cache[location]
+
+    # Search for activities
+    activities = []
+    if google_api_key and SCRAPER_AVAILABLE:
+        try:
+            activities = search_activities_live(location, api_key=google_api_key)
+        except Exception:
+            pass
+
+    if not activities:
+        # Mock fallback
+        city_name = location.split(",")[0].strip()
+        activities = [
+            {"name": f"{city_name} Museum of Art", "address": f"Downtown {city_name}",
+             "rating": 4.5, "types": ["museum"], "website_url": None},
+            {"name": f"{city_name} Central Park", "address": f"{city_name}",
+             "rating": 4.6, "types": ["park"], "website_url": None},
+            {"name": f"Downtown {city_name} Shopping District", "address": f"Main St, {city_name}",
+             "rating": 4.3, "types": ["shopping_mall"], "website_url": None},
+        ]
+
+    # Generate summary with AI or format manually
+    if client and OPENAI_AVAILABLE:
+        try:
+            context = json.dumps(activities, indent=2)
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": ACTIVITIES_SYSTEM_PROMPT},
+                    {"role": "user", "content": f"Activities near {location}:\n{context}"},
+                ],
+                max_tokens=300,
+            )
+            summary = resp.choices[0].message.content
+        except Exception:
+            summary = _format_activities_fallback(activities)
+    else:
+        summary = _format_activities_fallback(activities)
+
+    st.session_state.activities_cache[location] = summary
+    return summary
+
+
+def _format_activities_fallback(activities: list) -> str:
+    """Format activities without AI."""
+    lines = []
+    for a in activities[:4]:
+        name = a.get("name", "Unknown")
+        addr = a.get("address", "")
+        rating = a.get("rating")
+        rating_str = f" ({rating}⭐)" if rating else ""
+        lines.append(f"- **{name}**{rating_str} — {addr}")
+    return "\n".join(lines) if lines else "No activities found for this area."
+
+
+def food_finder_agent(query: str, location: str, client) -> dict:
+    """Run the restaurant pipeline and generate recommendations. Returns dict with answer + trace."""
+    # Run pipeline if new location
+    if location and location != st.session_state.current_location:
+        google_key = _get_google_key()
+        restaurants, data_source = discover_for_location(location, google_key)
+        st.session_state.restaurants = restaurants
+        st.session_state.data_source = data_source
+        enriched = _auto_enrich(restaurants, client=client)
+        st.session_state.enriched_records = enriched
+        st.session_state.enrichment_source = "openai" if client else "mock"
+        st.session_state.pipeline_ran = True
+        st.session_state.current_location = location
+
+    chat_records = st.session_state.enriched_records
+    if not chat_records:
+        return {"answer": "No restaurant data available yet.", "trace": {}}
+
+    # Use ChromaDB if available
+    if CHROMA_AVAILABLE:
+        try:
+            collection = get_chroma_collection()
+            chroma_results = chroma_search(query, collection, k=5)
+            if chroma_results:
+                chat_records = chroma_results
+        except Exception:
+            pass
+
+    if client:
+        trace = query_with_reflection(
+            query, chat_records,
+            st.session_state.conversation_history, client)
+        return {"answer": trace["final_response"], "trace": trace}
+    else:
+        retrieved = simple_retrieve(query, chat_records, k=3)
+        answer = "**Top matches:**\n\n"
+        for r in retrieved:
+            answer += (
+                f"**{r['name']}** ({r.get('city','')}) — {r.get('cuisine_type', 'N/A')}, "
+                f"{r.get('price_range', '$$')}, Rating: {r.get('rating', 'N/A')}\n\n"
+            )
+        return {"answer": answer, "trace": {}}
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 8  STREAMLIT UI — Multi-agent chat
+# ═══════════════════════════════════════════════════════════════════════════════
+
+APP_VERSION = "3.0"
+APP_VERSION_LABEL = "Multi-Agent"
+
 # ── Session state defaults ────────────────────────────────────────────────────
 for _key, _default in [
     ("restaurants", []), ("enriched_records", []),
     ("conversation_history", []), ("chat_messages", []),
     ("last_query_trace", {}), ("pipeline_ran", False),
     ("data_source", ""), ("enrichment_source", ""),
-    ("current_location", ""),
+    ("current_location", ""), ("activities_cache", {}),
 ]:
     if _key not in st.session_state:
         st.session_state[_key] = _default
@@ -874,18 +1072,18 @@ for _key, _default in [
 if not st.session_state.chat_messages:
     st.session_state.chat_messages = [{
         "role": "assistant",
-        "content": ("👋 Hi! I'm your restaurant finder. Tell me a city or area "
-                    "and I'll discover the best restaurants there!\n\n"
+        "content": ("👋 Hi! I'm your local area guide. Tell me a city and I'll find "
+                    "**great restaurants** and **fun things to do** nearby!\n\n"
                     "Try something like:\n"
-                    "- *\"Find restaurants in Syracuse, NY\"*\n"
-                    "- *\"What's good to eat in Rochester?\"*\n"
-                    "- *\"I'm looking for Italian food in Boston\"*")
+                    "- *\"Find Italian food and things to do in Syracuse\"*\n"
+                    "- *\"Plan a night out in Rochester\"*\n"
+                    "- *\"What's good to eat in Boston?\"*\n"
+                    "- *\"Things to do in Albany\"*")
     }]
 
 
 # ── Helper: read a secret/env var ─────────────────────────────────────────────
 def _get_secret(name: str) -> str:
-    """Try st.secrets first, then os.environ."""
     try:
         return st.secrets[name]
     except (KeyError, FileNotFoundError):
@@ -957,23 +1155,6 @@ def _auto_enrich(restaurants, client=None, progress_bar=None):
     return enriched
 
 
-def _run_pipeline_for_location(location: str):
-    """Run the full discovery → scrape → enrich → store pipeline for a location."""
-    google_key = _get_google_key()
-    client = get_openai_client()
-
-    restaurants, data_source = discover_for_location(location, google_key)
-    st.session_state.restaurants = restaurants
-    st.session_state.data_source = data_source
-
-    enriched = _auto_enrich(restaurants, client=client)
-    st.session_state.enriched_records = enriched
-    st.session_state.enrichment_source = "openai" if client else "mock"
-    st.session_state.pipeline_ran = True
-    st.session_state.current_location = location
-    return enriched
-
-
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.title("🍽️ Restaurant Finder")
@@ -992,7 +1173,9 @@ with st.sidebar:
 
     with st.expander("📋 Features", expanded=False):
         st.markdown("""
-        - ✅ Chat-first interface
+        - ✅ Multi-Agent Orchestrator
+        - ✅ Food Finder Agent
+        - ✅ Activities Agent
         - ✅ Dynamic location discovery
         - ✅ Web Scraping + AI Enrichment
         - ✅ ChromaDB Semantic Search
@@ -1045,7 +1228,7 @@ with st.sidebar:
     if st.button("🗑️ Clear Chat", use_container_width=True):
         st.session_state.chat_messages = [{
             "role": "assistant",
-            "content": "👋 Chat cleared! Tell me a city and I'll find restaurants there."
+            "content": "👋 Chat cleared! Tell me a city and I'll find restaurants and activities."
         }]
         st.session_state.conversation_history = []
         st.session_state.last_query_trace = {}
@@ -1053,6 +1236,7 @@ with st.sidebar:
         st.session_state.restaurants = []
         st.session_state.pipeline_ran = False
         st.session_state.current_location = ""
+        st.session_state.activities_cache = {}
         st.rerun()
 
 
@@ -1117,8 +1301,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── Hero ──────────────────────────────────────────────────────────────────────
-st.markdown('<p class="hero-title">🍽️ Restaurant Finder</p>', unsafe_allow_html=True)
-st.markdown('<p class="hero-sub">Tell me a location and I\'ll find the best restaurants for you</p>', unsafe_allow_html=True)
+st.markdown('<p class="hero-title">🍽️ Restaurant & Activity Finder</p>', unsafe_allow_html=True)
+st.markdown('<p class="hero-sub">Tell me a location — I\'ll find great food and fun things to do</p>', unsafe_allow_html=True)
 st.write("")
 
 # ── Chat messages ─────────────────────────────────────────────────────────────
@@ -1126,104 +1310,106 @@ for msg in st.session_state.chat_messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# ── Chat input ────────────────────────────────────────────────────────────────
-user_input = st.chat_input("Tell me a city or ask about restaurants...")
+# ── Chat input with multi-agent orchestration ─────────────────────────────────
+user_input = st.chat_input("Tell me a city, ask about food, or find activities...")
 if user_input:
     client = get_openai_client()
+    google_key = _get_google_key()
 
-    # Show user message
     with st.chat_message("user"):
         st.markdown(user_input)
     st.session_state.chat_messages.append({"role": "user", "content": user_input})
 
     with st.chat_message("assistant"):
-        # Step 1: Check if user mentioned a new location
-        new_location = extract_location(user_input, client)
+        # Step 1: Orchestrator classifies intent
+        routing = orchestrator_classify(user_input, client)
+        agents_to_run = routing.get("agents", ["food_finder"])
+        new_location = routing.get("location")
 
-        if new_location and new_location != st.session_state.current_location:
-            # Run pipeline for new location
-            with st.status(f"🔍 Discovering restaurants in {new_location}...", expanded=True) as status:
-                st.write("📡 Searching Google Places API...")
-                restaurants, data_source = discover_for_location(new_location, _get_google_key())
-                st.session_state.restaurants = restaurants
-                st.session_state.data_source = data_source
-                st.write(f"✅ Found {len(restaurants)} restaurants ({'live' if data_source == 'live' else 'mock data'})")
+        # Use existing location if no new one detected
+        location = new_location or st.session_state.current_location
 
-                st.write("🌐 Scraping websites & enriching with AI...")
-                enriched = _auto_enrich(restaurants, client=client)
-                st.session_state.enriched_records = enriched
-                st.session_state.enrichment_source = "openai" if client else "mock"
-                st.session_state.pipeline_ran = True
-                st.session_state.current_location = new_location
-                st.write(f"✅ Enriched {len(enriched)} restaurants")
-
-                if CHROMA_AVAILABLE:
-                    try:
-                        col = get_chroma_collection()
-                        st.write(f"💾 {col.count()} vectors in ChromaDB")
-                    except Exception:
-                        pass
-
-                status.update(label=f"✅ Found {len(enriched)} restaurants in {new_location}", state="complete")
-
-        # Step 2: Generate response
-        chat_records = st.session_state.enriched_records
-
-        if not chat_records:
-            answer = ("I don't have any restaurant data yet. "
-                      "Please tell me a city — for example: *\"Find restaurants in Syracuse, NY\"*")
-            st.markdown(answer)
-            st.session_state.chat_messages.append({"role": "assistant", "content": answer})
-        elif not client:
-            retrieved = simple_retrieve(user_input, chat_records, k=3)
-            answer = "**Top matches (keyword search):**\n\n"
-            for r in retrieved:
-                answer += (
-                    f"**{r['name']}** ({r.get('city','')}) — {r.get('cuisine_type', 'N/A')}, "
-                    f"{r.get('price_range', '$$')}, Rating: {r.get('rating', 'N/A')}\n\n"
-                )
-            answer += "\n*💡 Add an OpenAI API key for conversational recommendations.*"
+        if not location:
+            answer = ("I'd love to help! Please tell me a city first — for example:\n"
+                      "- *\"Find restaurants in Syracuse, NY\"*\n"
+                      "- *\"Plan a night out in Rochester\"*")
             st.markdown(answer)
             st.session_state.chat_messages.append({"role": "assistant", "content": answer})
         else:
-            # Use ChromaDB if available
-            if CHROMA_AVAILABLE:
-                try:
-                    collection = get_chroma_collection()
-                    chroma_results = chroma_search(user_input, collection, k=5)
-                    if chroma_results:
-                        chat_records = chroma_results
-                except Exception:
-                    pass
+            food_result = None
+            activities_text = None
 
-            # Query with self-reflection
-            with st.spinner("Thinking..."):
-                trace = query_with_reflection(
-                    user_input, chat_records,
-                    st.session_state.conversation_history, client)
-                answer = trace["final_response"]
-                st.session_state.last_query_trace = trace
+            # Step 2: Run pipeline for new location if needed
+            if new_location and new_location != st.session_state.current_location:
+                with st.status(f"🔍 Exploring {new_location}...", expanded=True) as status:
+                    if "food_finder" in agents_to_run:
+                        st.write("🍽️ **Food Finder Agent** — Discovering restaurants...")
+                        restaurants, data_source = discover_for_location(new_location, google_key)
+                        st.session_state.restaurants = restaurants
+                        st.session_state.data_source = data_source
+                        st.write(f"  ✅ Found {len(restaurants)} restaurants")
 
+                        st.write("  🌐 Scraping & enriching with AI...")
+                        enriched = _auto_enrich(restaurants, client=client)
+                        st.session_state.enriched_records = enriched
+                        st.session_state.enrichment_source = "openai" if client else "mock"
+                        st.session_state.pipeline_ran = True
+                        st.session_state.current_location = new_location
+                        st.write(f"  ✅ Enriched {len(enriched)} restaurants")
+
+                    if "alt_activities" in agents_to_run:
+                        st.write("🎭 **Activities Agent** — Finding things to do...")
+                        activities_text = alt_activities_agent(new_location, client, google_key)
+                        st.write("  ✅ Activities found")
+
+                    status.update(label=f"✅ Explored {new_location}", state="complete")
+            else:
+                # Existing location — just run activities if needed
+                if "alt_activities" in agents_to_run and location:
+                    with st.spinner("🎭 Finding activities..."):
+                        activities_text = alt_activities_agent(location, client, google_key)
+
+            # Step 3: Generate food recommendations
+            if "food_finder" in agents_to_run:
+                with st.spinner("🍽️ Finding the best match..."):
+                    food_result = food_finder_agent(user_input, location, client)
+
+            # Step 4: Combine response
+            combined_parts = []
+
+            if food_result and food_result.get("answer"):
+                combined_parts.append("### 🍽️ Restaurant Recommendations\n\n" + food_result["answer"])
+                st.session_state.last_query_trace = food_result.get("trace", {})
+
+            if activities_text:
+                combined_parts.append("---\n\n### 🎭 Things To Do Nearby\n\n" + activities_text)
+
+            if not combined_parts:
+                combined_parts.append("I found some information but couldn't generate a full response. Try rephrasing your question.")
+
+            answer = "\n\n".join(combined_parts)
             st.markdown(answer)
             st.session_state.chat_messages.append({"role": "assistant", "content": answer})
 
-            # Ethics evaluation
-            with st.spinner("Evaluating ethics..."):
-                retrieved_for_ethics = simple_retrieve(user_input, chat_records)
-                ethics = evaluate_ethics(user_input, answer, retrieved_for_ethics, client)
+            # Step 5: Ethics evaluation (on food response)
+            if food_result and client:
+                chat_records = st.session_state.enriched_records
+                with st.spinner("📊 Ethics check..."):
+                    retrieved_for_ethics = simple_retrieve(user_input, chat_records)
+                    ethics = evaluate_ethics(user_input, food_result["answer"], retrieved_for_ethics, client)
 
-            if "error" not in ethics:
-                with st.expander("📊 Ethics Scores", expanded=False):
-                    cols = st.columns(5)
-                    for idx, dim in enumerate(["geographic_fairness", "price_diversity",
-                                               "cuisine_respect", "transparency", "faithfulness"]):
-                        d = ethics.get(dim, {})
-                        with cols[idx]:
-                            st.metric(dim.replace('_', ' ').title(), f"{d.get('score', '?')}/5")
-                    st.write(f"**Overall: {ethics.get('overall', '?')}/5**")
-                    if ethics.get("issues"):
-                        for issue in ethics["issues"]:
-                            st.caption(f"⚠️ {issue}")
+                if "error" not in ethics:
+                    with st.expander("📊 Ethics Scores", expanded=False):
+                        cols = st.columns(5)
+                        for idx, dim in enumerate(["geographic_fairness", "price_diversity",
+                                                   "cuisine_respect", "transparency", "faithfulness"]):
+                            d = ethics.get(dim, {})
+                            with cols[idx]:
+                                st.metric(dim.replace('_', ' ').title(), f"{d.get('score', '?')}/5")
+                        st.write(f"**Overall: {ethics.get('overall', '?')}/5**")
+                        if ethics.get("issues"):
+                            for issue in ethics["issues"]:
+                                st.caption(f"⚠️ {issue}")
 
             # Self-reflection trace
             if st.session_state.last_query_trace.get("revised"):
@@ -1235,7 +1421,7 @@ if user_input:
                         for issue in critique["issues"]:
                             st.write(f"  • {issue}")
 
-# ── Browse restaurants (expandable below chat) ────────────────────────────────
+# ── Browse data (expandable below chat) ───────────────────────────────────────
 if st.session_state.enriched_records:
     st.divider()
     with st.expander(f"🍽️ Browse All Restaurants ({len(st.session_state.enriched_records)})", expanded=False):
